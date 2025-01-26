@@ -1,0 +1,8 @@
+chat.gemspecs.de:443 {
+    reverse_proxy localhost:5000
+
+    basicauth / {
+        chat $2a$14$X.OQK03EkxpVl09a5NU6defFDHB1zcsBrew37cRvQy09gNP9.YvyK 
+    }
+}
+

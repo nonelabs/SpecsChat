@@ -1,45 +1,82 @@
 import os
+import json
 from flask import Flask, request, jsonify, render_template, send_from_directory
 from falkordb import FalkorDB
 from urllib.parse import urljoin
 import requests
+import uuid
+import threading
 from openai import OpenAI
 client = OpenAI()
 
 db = FalkorDB(host='localhost', port=6379)
-graph = db.select_graph('specs')
 
 
 app = Flask(__name__)
 
-messages=[
-        {"role": "system", "content": "Du bist ein hilfreicher Assistent der Fragen zu den Spezifikationen beantwortet. Dazu verwendest ausschliesslich die Informationen die du in Context: findest. Wenn diese leer ist erstellst du ein Query um eine RAG Datenbank abzufragen, beantwortest du die Frage nicht ! Sollten die Informationen im Context nicht geeignet sein, die Frage zu beantworten, so beantworte sie nicht. Erwähne den Context selber nicht sondern bitte die Frage zu präzisieren Nenne immer auch die Links die zu den verwendeten Informationen gehörem"}
-    ]
+tools = [{
+    "type": "function",
+    "function": {
+        "name": "query_rag",
+        "description": "Informationen zu den gematik Spezifikationen aus einer Datenbank für Retrieval-Augmented-Generation (RAG) zur Frage des Nutzers abrufen",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Abfrage um Informationen zu den Fragen des Nutzers zu bekommen. Die Abfrage muss alle relevanten Punkte der Anfrage des Nutzers umfassen. \
+                        Beispiel: Frage Nutzer: Welche Anforderungen muss der TI-M Fachdienst hinsichtlich der Verschüsselung erfüllen ? Abfrage: TI-M Fachdienst welche Anforderungen zur Verschlüsselung."
+                }
+            },
+            "required": [
+                "query"
+            ],
+            "additionalProperties": False
+        },
+        "strict": True
+    }
+}]
 
-def answer(text):
+
+assistant_prompt = "Du bist eine deutschsprachiger Assistent, der dem Nutzer basierend auf Informationen aus einer Datenbank für Retrieval-Augmented-Generation (RAG) Fragen beantwortet. \
+                    Sollten die Informationen aus der Datenbank nicht ausreichen um die Frage zu beantworten, so stelle dem Nutzer weitere Fragen um die Datenbank spezifischer abfragen zu \
+                    können. Strukturiere deine Antwort gut und gib zu allen Informationen immer die URL auf die Quelle in den Spezifikationen an. Es muss alles nachvollziehbar sein. Verwende Markdown." 
+
+messages={}
+lock = threading.Lock()
+
+def answer(session_id,user_message):
     global messages
-    messages.append({"role": "user", "content": " Anweisung: Basierend auf den Fragen des Nutzers formuliere eine Query um eine RAG Datenbank abzufragen. Das Query sollte die Fragen des Nutzers zusammenfassen. Antworte nur mit dem Query. Frage des Nutzers: " + text})
+    messages[session_id].append({"role": "user", "content": user_message})
     completion = client.chat.completions.create(
         model="gpt-4o",
-        messages=messages
+        messages=messages[session_id],
+        tools = tools
     )
-    query = completion.choices[0].message.content
-    context = query_graph(query)
-    messages = messages[0:-1]
-    messages.append({"role": "user","content": text + context})
-    completion = client.chat.completions.create(
-        model="gpt-4o",
-        messages=messages
-    )
-    messages.append({"role":"assistant","content":completion.choices[0].message.content})
-    print(messages)
+    tool_call = completion.choices[0].message.tool_calls
+    if tool_call is not None:
+        messages[session_id].append(completion.choices[0].message)
+        for tc in tool_call:
+            result = query_graph(json.loads(tc.function.arguments)["query"])
+            messages[session_id].append({                               # append result message
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": result
+                })
+        completion = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages[session_id],
+            tools = tools
+        )
+
+    messages[session_id].append({"role":"assistant","content":completion.choices[0].message.content})
     return str(completion.choices[0].message.content)
 
 def get_embedding(text, model="text-embedding-3-large"):
     text = text.replace("\n", " ")
     return client.embeddings.create(input = [text], model=model).data[0].embedding
 
-def get_siblings(content_id):
+def get_siblings(graph,content_id):
     result = graph.ro_query(f"""
     MATCH (c:Content {{url: '{content_id}'}})<-[:CONTAINS]-(h:Heading)-[:CONTAINS]->(s:Content)
     RETURN h, collect(s.text) AS texts, collect(s.url) AS urls
@@ -49,30 +86,43 @@ def get_siblings(content_id):
 
 
 def query_graph(query):
-    res = graph.ro_query(
-        '''CALL db.idx.vector.queryNodes
-    (
-        'Content',
-        'embedding',
-        $fetch_k,
-        vecf32($query_vector)
-    )
-    YIELD node AS closestNode, score
-    RETURN closestNode.url, score
-    ''', params={'fetch_k': 107, 'query_vector': list(get_embedding(query))})
+    print(query)
     context = []
-    links = []
-    for l in res.result_set:
-        if l[1] < 0.9:
-            c,l = get_siblings(l[0])
-            context += c 
-            links += l
-    result = ""
+    urls = []
+    top_scores = []
+    for graph in ['TI-M_Basis']:
+        g = db.select_graph(graph)
+        res = g.ro_query(
+            '''CALL db.idx.vector.queryNodes
+        (
+            'Content',
+            'embedding',
+            $fetch_k,
+            vecf32($query_vector)
+        )
+        YIELD node AS closestNode, score
+        RETURN closestNode.url, score
+        ''', params={'fetch_k': 10, 'query_vector': list(get_embedding(query))})
+    
+        for l in res.result_set:
+            if len(top_scores) < 5:
+                top_scores.append(l[1])
+            else:
+                top_scores.sort() 
+                if(l[1] < top_scores[-1]):
+                    top_scores.pop()
+                    top_scores.append(l[1])
+            c,u = get_siblings(g,l[0])
+            for i,u in enumerate(u):
+                if not u in urls:
+                    context.append(c[i])
+                    urls.append((u,l[1]))
+    results = ""
     for i,c in enumerate(context):
-        result += c 
-        if len(links) < i:
-            results += links[i]
-    return " Context:"+result
+        if urls[i][1] < top_scores[-1]:
+            results += c 
+            results += "("+urls[i][0]+")"
+    return results
 
 
 @app.route('/')
@@ -87,11 +137,15 @@ def serve_file(filename):
 def chat():
     data = request.json
     user_message = data.get('message', '')
-
-    response_text = answer(user_message)
+    session_id = data.get('session_id')
+    lock.acquire()
+    if not session_id in messages:
+        messages[session_id] = [{"role":"system", "content":assistant_prompt}]
+    response_text = answer(session_id,user_message)
+    lock.release()
 
     return jsonify({
-        'answer': user_message #response_text
+        'answer': response_text 
     })
 
 if __name__ == '__main__':

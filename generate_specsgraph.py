@@ -6,7 +6,7 @@ from openai import OpenAI
 client = OpenAI()
 
 urls = ["https://chat.gemspecs.de/specs/gemSpec_TI-M_Basis_V1.1.1.html",
-		"https://chat.gemspecs.de/specs/gemSpec_TI-Messenger-Client/gemSpec_TI-Messenger-Client_V1.1.2.html",
+		"https://chat.gemspecs.de/specs/gemSpec_TI-Messenger-Client_V1.1.2.html",
 		"https://chat.gemspecs.de/specs/gemSpec_TI-M_ePA_V1.1.1.html",
 		"https://chat.gemspecs.de/specs/gemSpec_TI-Messenger-FD_V1.1.1.html",
 		"https://chat.gemspecs.de/specs/gemSpec_TI-M_Pro_V1.0.1.html",
@@ -37,6 +37,8 @@ def traverse_element(element,url,cnt):
                     text += sibling.get_text(separator="\n", strip=True).replace("'","\"").replace("\xa0", " ") + "\n"
                     links += [a['href'] for a in sibling.find_all('a', href=True)]
                     sibling = sibling.find_next_sibling()
+                    if sibling is None:
+                        break
                 embedding = list(get_embedding(text)) 
                 graph.query(f"""
                             MATCH (p:Heading {{url:'{parent_url}'}})
@@ -84,7 +86,7 @@ for url in urls:
     graph.query("CREATE VECTOR INDEX FOR (p:Content) ON (p.embedding) OPTIONS {dimension:3072, similarityFunction:'cosine'}")
     cnt = 0
     print(url)
-    html_content = requests.get(urls[0]).content
+    html_content = requests.get(url).content
     graph.query(f"CREATE (:gemSpec {{id:'{url}'}})")
     soup = BeautifulSoup(html_content, "html.parser")
     heading = soup.find("h2",{'id': '1', 'class':'target-element'})

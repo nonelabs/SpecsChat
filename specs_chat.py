@@ -4,6 +4,7 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from falkordb import FalkorDB
 from urllib.parse import urljoin
 import requests
+import glob
 import numpy as np
 import uuid
 import threading
@@ -41,7 +42,8 @@ tools = [{
 
 assistant_prompt = "Du bist eine deutschsprachiger Assistent, der dem Nutzer hilft basierend auf Informationen aus einer Datenbank für Retrieval-Augmented-Generation (RAG) seine Fragen zu beantworten. \
                     Sollten die Informationen aus der Datenbank nicht ausreichen um die Frage zu beantworten, so stelle dem Nutzer weitere Fragen um die Datenbank spezifischer abfragen zu \
-                    können. Beantworte die Frage des Nutzers ausführlich und vollständig. Füge zu jeder Aussage die zugehörige Quelle hinzu. Nutze Markdown. Bei Aufzählungen nutze nur eine Ebene. Die Quelle soll nicht als Aufzählungen aufgelistet werden."
+                    können. Beantworte die Frage des Nutzers ausführlich und vollständig basierend auf den Informationen der Datenbankabfrage. Füge zu jeder Aussage die zugehörige Quelle hinzu. Füge hierzu die URL als Markdown Link bei. \
+                    Verwende dazu folgendes Format [[Html Dateiname]#[Identifier]]([URL]). Bei Aufzählungen nutze nur eine Ebene. Die Quelle soll nicht als Aufzählungen aufgelistet werden."
 
 messages={}
 lock = threading.Lock()
@@ -68,7 +70,7 @@ def answer(session_id,user_message):
                 })
         completion = client.chat.completions.create(
             model="gpt-4o",
-            max_tokens=1000,    # Increase this to allow longer responses
+            max_tokens=2000,    # Increase this to allow longer responses
             top_p=0.9,          # Nucleus sampling to ensure high-quality responses
             frequency_penalty=0, # Reduces repeated phrases
             presence_penalty=0,   # Encourages topic exploration
@@ -128,15 +130,18 @@ def get_siblings(graph,content_id, embedding, top_k):
     return text[0:top_k], urls[0:top_k] 
 
 def query_graph(query):
-    print(query)
     context = []
     urls = []
     top_scores = []
     top_sieblings= []
-    for graph in ['TI-M_Basis','TI-Messenger-Client','TI-M_ePA','TI-Messenger-FD','TI-M_Pro','TI-Messenger-Dienst']:
+    graphs = glob.glob("specs/Aktensystem/*.html") 
+
+    for graph in graphs: 
+        graph_name = "/".join(graph.split("/")[-2:])
+        print(graph_name)
         embedding = get_embedding(query)
         try:
-            g = db.select_graph(graph)
+            g = db.select_graph(graph_name)
             res = g.ro_query(
                 '''CALL db.idx.vector.queryNodes
             (
@@ -147,10 +152,10 @@ def query_graph(query):
             )
             YIELD node AS closestNode, score
             RETURN closestNode.url, score
-            ''', params={'fetch_k': 5,'query_vector': list(embedding)})
+            ''', params={'fetch_k': 10,'query_vector': list(embedding)})
         
             for l in res.result_set:
-                if len(top_scores) < 10:
+                if len(top_scores) < 20:
                     top_scores.append(l[1])
                 else:
                     top_scores.sort() 
@@ -160,7 +165,7 @@ def query_graph(query):
                     else:
                         continue
                 try:
-                    t,u = get_siblings(g,l[0],embedding,3)
+                    t,u = get_siblings(g,l[0],embedding,5)
                     for i,uu in enumerate(u):
                         if not (uu[0],l[1]) in urls and not t[i][0] in context:
                             context.append(t[i][0])

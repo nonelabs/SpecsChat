@@ -3,4 +3,3 @@ requests
 falkordb
 flask
 openai
-numpy

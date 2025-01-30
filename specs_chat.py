@@ -53,6 +53,29 @@ TOOLS = [{
     }
 }]
 
+TOOLS_2 = [{
+    "type": "function",
+    "function": {
+        "name": "query_rag",
+        "description": "Informationen zu den gematik Spezifikationen aus einer Datenbank für Retrieval-Augmented-Generation (RAG) zur Frage des Nutzers abrufen",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Abfrage um Informationen zum Verfassen eines Absatzes basierend auf einer Beschreibung des Absatzes zu bekommen. Die Abfrage muss alle relevanten Punkte die im Absatz behandelt werden umfassen. \
+                        Beispiel: Beschreibung: Kontext TI-Messenger - Untersuchung der Integrationsmöglichkeiten in bestehende Systeme  ? Abfrage: TI-Messenger, Integration in bestehende Systeme"
+                }
+            },
+            "required": [
+                "query"
+            ],
+            "additionalProperties": False
+        },
+        "strict": True
+    }
+}]
+
 
 assistant_prompt = "Du bist eine deutschsprachiger Assistent, der dem Nutzer hilft basierend auf Informationen aus einer Datenbank für Retrieval-Augmented-Generation (RAG) seine Fragen zu beantworten. \
                     Sollten die Informationen aus der Datenbank nicht ausreichen um die Frage zu beantworten, so stelle dem Nutzer weitere Fragen um die Datenbank spezifischer abfragen zu \
@@ -67,7 +90,7 @@ def get_model_answer(session_id, messages, user_message, tools = None):
     messages.append({"role": "user", "content": user_message })
     completion = client.chat.completions.create(
         model="gpt-4o",
-        max_tokens=5000 if tools is None else 1000,    # Increase this to allow longer responses
+        max_tokens=4000 if tools is None else 1000,    # Increase this to allow longer responses
         messages=messages,
         tools = tools,
     )
@@ -83,7 +106,7 @@ def get_model_answer(session_id, messages, user_message, tools = None):
                 })
         completion = client.chat.completions.create(
             model="gpt-4o",
-            max_tokens=2000,    # Increase this to allow longer responses
+            max_tokens=4000,    # Increase this to allow longer responses
             top_p=0.9,          # Nucleus sampling to ensure high-quality responses
             frequency_penalty=0, # Reduces repeated phrases
             presence_penalty=0,   # Encourages topic exploration
@@ -100,13 +123,13 @@ def answer(session_id,user_message):
     MESSAGES[session_id], tool_call = get_model_answer(session_id, MESSAGES[session_id],user_message, TOOLS)
     if tool_call:
         if OPTIONS[session_id]['deep'] == False:
-            get_model_answer(session_id, "Überarbeite die Antwort. Strukturiere sie und achte darauf, dass meine Fragen ausführlich und vollumfänglich beantwortet werden. \
+            get_model_answer(session_id, MESSAGES[session_id],"Überarbeite die Antwort. Strukturiere sie und achte darauf, dass meine Fragen ausführlich und vollumfänglich beantwortet werden. \
                                         Falls dir noch Informationen fehlen, dann stelle eine angepasste Anfrage an die Datenbank. Gib nur das Ergebnis aus. Keine Einleitung \
                                         und keine Zusammenfassung.", TOOLS)
         else:
             tmp_messages = copy.deepcopy(MESSAGES[session_id])
             tmp_messages.append({"role":"user","content":"Erstelle basierend auf den Informationen eine Struktur für ausführliche Antwort. Die Struktur soll aus mehreren Überschriften \
-                                bestehen und eine kurze Beschreibung der Fragestellung beinhalten"})
+                                bestehen und jeweils eine kurze Beschreibung des Inhalts beinhalten, der darauf eingeht wie der Absatz im Kontext der Frage des Nutzers steht."})
             completion = client.beta.chat.completions.parse(
                 model="gpt-4o",
                 messages=tmp_messages,
@@ -116,20 +139,33 @@ def answer(session_id,user_message):
             MESSAGES[session_id] = MESSAGES[session_id][0:-4]
             tmp_messages = copy.deepcopy(MESSAGES[session_id])
             structure = completion.choices[0].message.parsed
-            content = []
+            content = ""
+            n = 1
             for s in structure.content:
                 title = s.title
                 description = s.description
-                tmp_messages.append({"role":"user", "content":"Schreibe basierend auf Informationen aus einer Datenbank für Retrieval-Augmented-Generation (RAG) einen Absatz entsprechend einer vorgegebenen Beschreibung der Fragestellung.  \
-                                    Stelle hierzu basierend auf der Beschreibung der Fragestellung geeignete Abfragen die Datenbank !\
+                print(str(n) + ". " +  title + "\n")
+                print(description)
+                print()
+            n = 1
+            for s in structure.content:
+                title = s.title
+                description = s.description
+                print(str(n) + ". " +  title + "\n")
+                print(description)
+                print()
+                msg = content + "\n\n Schreibe basierend auf den Informationen aus einer Datenbank für Retrieval-Augmented-Generation (RAG) einen weiteren Absatz entsprechend einer vorgegebenen Beschreibung der Fragestellung.  \
+                                    Stelle hierzu basierend auf der Beschreibung der Fragestellung geeignete Abfragen an die Datenbank !\
                                     Füge zu jeder Aussage im Absatz die zugehörige Quelle hinzu. Füge hierzu die URL als Markdown Link bei. \
-                                    Verwende dazu folgendes Format [[Html Dateiname]#[Identifier]]([URL]). Nutze bei Aufzählungen nur eine Ebene. Die Quelle soll nicht als Aufzählungen aufgelistet werden. Gib als Antwort nur den Titel und den zugehörigen Absatz zurück. Strukturiere den Text und verwende Markdown\n.\
-                                    Titel:\"{}\"\n\nBeschreibung:\"{}\"".format(title,description)})
-                res, _ = get_model_answer(session_id, tmp_messages,user_message, TOOLS)
-                content.append(res[-1]["content"])
-                tmp_messages.pop()
-            content = "\n".join(content)
-            MESSAGES[session_id], _ = get_model_answer(session_id, MESSAGES[session_id],"Überarbeite folgenden Text. Achte darauf, dass der Inhalt und alle Quellenangaben vollständig sind. Sei ausführlich und lasse inhaltlich nichts weg. Strukturiere den Text in geeigneter Form und verwende Markdown: \n" + content, None)
+                                    Verwende dazu folgendes Format [[FILENAME]#[IDENTIFIER]]([URL]). Hierbei ist FILENAME der Name des html Dokuments und IDENTIFIER die Identifier welcher durch # markiert ist.  \
+                                    Verwende Markdown. Verwende Bullet-Point, wenn es der Verständlichkeit und Lesbarkeit hilft.  Die Quelle soll nicht als Bullet Points aufgelistet werden. Gib als Antwort nur den neuen Absatz ohne Titel zurück. \n.\
+                                    Titel:\"{}\"\n\nBeschreibung:\"{}\"".format(title,description)
+                res, _ = get_model_answer(session_id, tmp_messages,msg, TOOLS)
+                res = res[-1]["content"]
+                if res is not None:
+                    content += "\n\n"+str(n)+". "+title+"\n\n"+ res
+                n+=1
+            MESSAGES[session_id], _ = get_model_answer(session_id, MESSAGES[session_id],"Überarbeite folgenden Text. Achte darauf, dass der Inhalt und alle Quellenangaben vollständig sind. Sei ausführlich und lasse inhaltlich nichts weg. Verwende Markdown! Strukturiere den Text in geeigneter Form und verwende bei Bullet-Points wenn es der Verständlichkeit und Lesbarkeit hilft. : \n" + content, None)
 
     return str(MESSAGES[session_id][-1]["content"])
 
@@ -157,7 +193,9 @@ def get_siblings_topk(graph,content_id, embedding, top_k):
 
 
 def query_graph(session_id,query):
-    print(query)
+    print ("\n")
+    print("Query: "+query)
+    print("\n in: \n\n")
     context = []
     urls = []
     top_scores = []
@@ -179,10 +217,10 @@ def query_graph(session_id,query):
             )
             YIELD node AS closestNode, score
             RETURN closestNode.url, score
-            ''', params={'fetch_k': 10,'query_vector': list(embedding)})
+            ''', params={'fetch_k': 5,'query_vector': list(embedding)})
         
             for l in res.result_set:
-                if len(top_scores) < 20:
+                if len(top_scores) < 10:
                     top_scores.append(l[1])
                 else:
                     top_scores.sort() 
@@ -192,7 +230,7 @@ def query_graph(session_id,query):
                     else:
                         continue
                 try:
-                    t,u = get_siblings_topk(g,l[0],embedding,5)
+                    t,u = get_siblings_topk(g,l[0],embedding,3)
                     for i,uu in enumerate(u):
                         if not (uu[0],l[1]) in urls and not t[i][0] in context:
                             context.append(t[i][0])
@@ -206,7 +244,6 @@ def query_graph(session_id,query):
         if urls[i][1] < top_scores[-1]:
             results += c.replace("[<=]"," ").replace("[&lt;=]"," ") 
             results += " Quelle: "+urls[i][0] + ".\n\n\n"
-    print(results)
     return results
 
 @app.route('/')

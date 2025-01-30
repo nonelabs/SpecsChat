@@ -160,7 +160,7 @@ def answer(session_id,user_message):
                                     Verwende dazu folgendes Format [[FILENAME]#[IDENTIFIER]]([URL]). Hierbei ist FILENAME der Name des html Dokuments und IDENTIFIER die Identifier welcher durch # markiert ist.  \
                                     Verwende Markdown. Verwende Bullet-Point, wenn es der Verständlichkeit und Lesbarkeit hilft.  Die Quelle soll nicht als Bullet Points aufgelistet werden. Gib als Antwort nur den neuen Absatz ohne Titel zurück. \n.\
                                     Titel:\"{}\"\n\nBeschreibung:\"{}\"".format(title,description)
-                res, _ = get_model_answer(session_id, tmp_messages,msg, TOOLS)
+                res, _ = get_model_answer(session_id, tmp_messages,msg, TOOLS_2)
                 res = res[-1]["content"]
                 if res is not None:
                     content += "\n\n"+str(n)+". "+title+"\n\n"+ res
